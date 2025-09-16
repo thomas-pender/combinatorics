@@ -7,6 +7,8 @@
  * @author Thomas Pender
  * @date 2025-07
  */
+# include <config.h>
+
 # include <diophantine.h>
 
 # define INIT_NUM 100

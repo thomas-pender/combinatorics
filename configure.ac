@@ -8,6 +8,7 @@ AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_SRCDIR([src/diophantine.c])
 AC_CONFIG_HEADERS([src/config.h])
+AX_PREFIX_CONFIG_H([include/combinatorics-config.h], , [src/config.h])
 
 AM_INIT_AUTOMAKE([subdir-objects])
 
@@ -44,9 +45,12 @@ AM_CONDITIONAL([DOXY_], [test "x${_doxy}" = xyes])
 have_containers=no
 AC_SEARCH_LIBS([arrays_new], [containers], [have_containers=yes])
 
+have_gmp=no
+AC_SEARCH_LIBS([__gmpz_init], [gmp], [have_gmp=yes])
+
 # Checks for header files.
 if test "x${have_containers}" = xyes; then
-   AC_CHECK_HEADERS([containers/containers.h], [], have_containers=no)
+   AC_CHECK_HEADERS([containers/containers.h], [], [have_containers=no])
 fi
 
 if test "x${have_containers}" = xno; then
@@ -56,6 +60,22 @@ The containers library must be installed
 and in the search path of the compiler.
 Check 'config.log' for more information.
 ----------------------------------------])
+fi
+
+if test "x${have_gmp}" = xyes; then
+   AC_CHECK_HEADERS([gmp.h], [], [have_gmp=no])
+fi
+
+if test "x${have_gmp}" = xno; then
+   AC_MSG_WARN([
+---------------------------------------------
+GMP library not found. See https:www/gmp/org.
+Multiprecision integers are used when
+calculating the order of a permutation group.
+Without this library installed, you run the
+risk of overflow when calculating the order
+of a group.
+---------------------------------------------])
 fi
 
 AC_SUBST([LIBS])

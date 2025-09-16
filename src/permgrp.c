@@ -9,11 +9,11 @@
  * @author Thomas Pender
  * @date 2025-07
  */
+# include <config.h>
+
 # include <permgrp.h>
 # include <permgrp_struct_p.h>
 # include <perm.h>
-
-# include <assert.h>
 
 extern void swap(void*, void*, size_t);
 
@@ -49,7 +49,7 @@ void permgrp_free(permgrp_t *G)
   *G = NULL;
 }
 
-size_t permgrp_order(permgrp_t G)
+size_t permgrp_orderfast(permgrp_t G)
 {
   if ( G == NULL ) return 1;
   size_t num = 1;
@@ -57,12 +57,30 @@ size_t permgrp_order(permgrp_t G)
   return num;
 }
 
-size_t permgrp_sbgrporder(permgrp_t G, size_t i)
+size_t permgrp_sbgrporderfast(permgrp_t G, size_t i)
 {
   size_t num = 1;
   for ( size_t j = i; j < G->base_size; j++ ) num *= G->trees[j]->size;
   return num;
 }
+
+# ifdef HAVE_GMP_H
+void permgrp_order(mpz_t n, permgrp_t G)
+{
+  mpz_set_ui(n, 1UL);
+  if ( G == NULL ) return;
+  for ( size_t i = 0; i < G->base_size; i++ )
+    mpz_mul_ui(n, n, G->trees[i]->size);
+}
+
+void permgrp_sbgrporder(mpz_t n, permgrp_t G, size_t i)
+{
+  mpz_set_ui(n, 1UL);
+  if ( G == NULL ) return;
+  for ( size_t j = i; j < G->base_size; j++ )
+    mpz_mul_ui(n, n, G->trees[j]->size);
+}
+# endif
 
 void permgrp_new_base(permgrp_t G[static 1],
                       const uint32_t *base, size_t b)
@@ -83,11 +101,17 @@ void permgrp_new_base(permgrp_t G[static 1],
 permgrp_t permgrp_sym(size_t n)
 {
   if ( n <= 1 ) return NULL;
+
+  size_t i;
+  uint32_t *base = (uint32_t*)malloc(n * sizeof(uint32_t));
+  for ( i = 0; i < n; i++ ) base[i] = i;
+
   if ( n == 2 ) {
     uint32_t *gen = (uint32_t*)malloc(n * sizeof(uint32_t));
     gen[0] = 1; gen[1] = 0;
-    permgrp_t Sym = permgrp_new((const uint32_t *restrict*)&gen, 1, n, NULL, 0);
+    permgrp_t Sym = permgrp_new((const uint32_t *restrict*)&gen, 1, n, base, n);
     free(gen);
+    free(base);
     return Sym;
   }
 
@@ -95,15 +119,11 @@ permgrp_t permgrp_sym(size_t n)
   gens[0] = (uint32_t*)malloc(n * sizeof(uint32_t));
   gens[1] = (uint32_t*)malloc(n * sizeof(uint32_t));
 
-  size_t i;
   for ( i = 0; i < n; i++ ) {
     gens[0][i] = i;
     gens[1][i] = (i + 1) % n;
   }
   swap(&gens[0][0], &gens[0][1], sizeof(gens[0][0]));
-
-  uint32_t *base = (uint32_t*)malloc(n * sizeof(uint32_t));
-  for ( i = 0; i < n; i++ ) base[i] = i;
 
   permgrp_t Sym = permgrp_new((const uint32_t *restrict*)gens, 2, n, base, n);
 
@@ -264,7 +284,7 @@ void permgrp_orbrep_update(permgrp_t G, uint32_t orbrep[static 1], size_t i)
     while ( !sstacks_empty(tmp) ) {
       fundorb_args_t *args = (fundorb_args_t*)malloc(sizeof(fundorb_args_t));
 
-      args->base = *sstacks_pop(tmp);
+      args->base = *(uint32_t*)sstacks_pop(tmp);
       args->a = &a[0];
       args->points = &points[0];
       args->min = &min;
@@ -281,3 +301,226 @@ void permgrp_orbrep_update(permgrp_t G, uint32_t orbrep[static 1], size_t i)
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Setwize stabilizer routines.
+ * ---------------------------------------------------------------------------*/
+
+static inline
+void _update_fund_orbs(permgrp_t K, size_t j, sets_t **fund_orbs, size_t m)
+{
+  size_t a, b;
+  for ( a = 0; a < j; a++ ) {
+    _EMPTYSET(fund_orbs[a], m);
+    for ( b = 0; b < permgrp_degree(K); b++ )
+      if ( permgrp_rep(K, a, b) != NULL )
+        _ADDELEMENT(fund_orbs[a], b);
+  }
+}
+
+static inline
+uint32_t _orb_next_point(const uint32_t points[static 1], size_t deg)
+{
+  for ( uint32_t i = 0; i < deg; i++ ) if ( points[i] == 1 ) return i;
+  return deg;
+}
+
+static inline
+int _test(permgrp_t G, const sets_t *fund_orbs[static 1],
+          const uint32_t *u[static 1], uint32_t gamma, size_t l)
+{
+  uint32_t elem;
+  uint32_t *base = permgrp_base(G), *order = permgrp_ordering(G);
+  for ( size_t i = 0; i < l; i++ ) {
+    if ( _ISELEMENT(fund_orbs[i], base[l]) ) {
+      elem = apply_elem(base[i], u, i + 1);
+      if ( order[gamma] <= order[elem] ) return -1;
+    }
+  }
+  return 1;
+}
+
+static inline
+size_t _fixed_base(permgrp_t G, const uint32_t p[static 1], size_t j)
+{
+  uint32_t *base = permgrp_base(G);
+  for ( size_t i = 0; i < j; i++ )
+    if ( base[i] != p[base[i]] ) return i;
+  return j;
+}
+
+static inline
+void _orbit_apply(uint32_t orbit[static 1],
+                  const uint32_t *restrict u[static 1],
+                  size_t l, size_t orblen)
+{
+  if ( l == 0 ) return;
+  for ( size_t i = 0; i < orblen; i++ )
+    orbit[i] = apply_elem(orbit[i], (const uint32_t**)u, l);
+}
+
+static
+int _orb_cmp(const void *_a, const void *_b, void *_c)
+{
+  uint32_t a = *(uint32_t*)_a;
+  uint32_t b = *(uint32_t*)_b;
+  uint32_t *order = (uint32_t*)_c;
+  if ( order[a] < order[b] ) return -1;
+  if ( order[a] > order[b] ) return 1;
+  return 0;
+}
+
+static
+void _setstab_in(size_t l, size_t j, size_t *skipto,
+                 permgrp_t G, permgrp_t *K,
+                 uint32_t *restrict u[restrict static 1],
+                 uint32_t *restrict u_inv[restrict static 1],
+                 sets_t *restrict fund_orbs[static 1],
+                 uint32_t *restrict orb_decomp[restrict static 1],
+                 const sets_t s[restrict static 1],
+                 size_t m, uint32_t Kbase[restrict static 1])
+{
+  if ( l == j ) {
+    uint32_t *p = arraytoelem((const uint32_t *restrict*)u, l, permgrp_degree(G));
+    if ( perm_id_cmp(p, permgrp_degree(G)) < 0 ) {
+      if ( *K == NULL )
+        *K = permgrp_new((const uint32_t *restrict*)&p, 1, permgrp_degree(G),
+                         NULL, 0);
+      else permgrp_update(*K, p);
+      permgrp_new_base(K, permgrp_base(G), permgrp_baselen(G));
+      _update_fund_orbs(*K, j, (sets_t**)fund_orbs, m);
+      permgrp_new_base(K, Kbase, l);
+      *skipto = _fixed_base(G, p, j);
+      for ( size_t i = 0; i <= *skipto; i++ )
+        permgrp_orbrep_update(*K, orb_decomp[i], i);
+    }
+    free(p);
+    return;
+  }
+
+  size_t i;
+  uint32_t gamma;
+  uint32_t *orbit = permgrp_fundorb(G, l);
+  _orbit_apply(orbit, (const uint32_t *restrict*)u, l, permgrp_fundorb_size(G, l));
+  qsort_r(orbit, permgrp_fundorb_size(G, l), sizeof(orbit[0]),
+          _orb_cmp, permgrp_ordering(G));
+
+  *skipto = l;
+  if ( *K != NULL ) permgrp_orbrep_update(*K, orb_decomp[l], l);
+
+  for ( i = 0; i < permgrp_fundorb_size(G, l) && l <= *skipto; i++ ) {
+    if ( *K != NULL && orb_decomp[l][orbit[i]] != 1 ) continue;
+    if ( !_ISELEMENT(s, orbit[i]) ) continue;
+    gamma = apply_elem_inv(orbit[i], (const uint32_t**)u_inv, l);
+    perm_cpy_inplace(u[l], permgrp_rep(G, l, gamma), permgrp_degree(G));
+    perm_cpy_inplace(u_inv[l], permgrp_repinv(G, l, gamma), permgrp_degree(G));
+    gamma = orbit[i];
+    Kbase[l] = gamma;
+
+    if ( *K != NULL ) {
+      uint32_t *order = permgrp_ordering(G);
+      if ( bit_setsize(fund_orbs[l], m) > 1 &&
+           order[orbit[permgrp_fundorb_size(G, l) -
+                       bit_setsize(fund_orbs[l], m) + 1]] <= order[gamma])
+        continue;
+      order = NULL;
+      if ( _test(G, (const sets_t**)fund_orbs, (const uint32_t**)u, gamma, l) < 0 )
+        continue;
+      permgrp_new_base(K, Kbase, l + 1);
+    }
+
+    _setstab_in(l + 1, j, skipto, G, K, u, u_inv, fund_orbs, orb_decomp,
+                s, m, Kbase);
+  }
+
+  free(orbit);
+}
+
+permgrp_t permgrp_setstab(permgrp_t G[static 1], sets_t s[static 1], size_t m)
+{
+  if ( G == NULL || *G == NULL ) return NULL;
+
+  size_t i, j;
+
+  /* rebase acting group */
+  size_t set_size = bit_setsize(s, m);
+  uint32_t *base = (uint32_t*)malloc(set_size * sizeof(uint32_t));
+  uint32_t *old_base = (uint32_t*)malloc(permgrp_degree(*G) * sizeof(uint32_t));
+
+  {
+    size_t index = 0;
+    for ( int z = -1; (z = bit_nextelement(s, m, z)) >= 0; ) base[index++] = z;
+    uint32_t *Gbase = permgrp_base(*G);
+    for ( i = 0; i < permgrp_degree(*G); i++ ) old_base[i] = Gbase[i];
+    Gbase = NULL;
+  }
+
+  permgrp_new_base(G, base, set_size);
+
+  /* get pointwise stabilizer of set */
+  permgrp_t K = NULL;
+  {
+    arrays_t Agens = permgrp_generatorssbgrp(*G, set_size);
+    if ( arrays_nmem(Agens) > 0 ) {
+      uint32_t **gens = (uint32_t**)malloc(arrays_nmem(Agens) * sizeof(uint32_t*));
+      size_t ngens = 0;
+      for ( i = 0; i < arrays_nmem(Agens); i++ )
+        if ( perm_id_cmp(arrays_at(Agens, i), permgrp_degree(*G)) < 0 )
+          gens[ngens++] = arrays_at(Agens, i);
+
+      if ( ngens > 0 )
+        K = permgrp_new((const uint32_t *restrict*)gens, ngens,
+                        permgrp_degree(*G), (const uint32_t *restrict)base,
+                        set_size);
+
+      free(gens);
+    }
+    arrays_free(&Agens);
+  }
+
+  uint32_t **u = (uint32_t**)malloc(set_size * sizeof(uint32_t*));
+  uint32_t **u_inv = (uint32_t**)malloc(set_size * sizeof(uint32_t*));
+  for ( i = 0; i < set_size; i++ ) {
+    u[i] = (uint32_t*)malloc(permgrp_degree(*G) * sizeof(uint32_t));
+    u_inv[i] = (uint32_t*)malloc(permgrp_degree(*G) * sizeof(uint32_t));
+  }
+
+  sets_t **fund_orbs = (sets_t**)malloc(set_size * sizeof(sets_t*));
+  for ( i = 0; i < set_size; i++ )
+    fund_orbs[i] = (sets_t*)malloc(m * sizeof(sets_t));
+  if ( K != NULL ) _update_fund_orbs(K, set_size, fund_orbs, m);
+  else {
+    for ( i = 0; i < set_size; i++ ) {
+      _EMPTYSET(fund_orbs[i], m);
+      _ADDELEMENT(fund_orbs[i], base[i]);
+    }
+  }
+
+  uint32_t **orb_decomp = (uint32_t**)malloc(set_size * sizeof(uint32_t*));
+  for ( i = 0; i < set_size; i++ ) {
+    orb_decomp[i] = (uint32_t*)malloc(permgrp_degree(*G) * sizeof(uint32_t));
+    for ( j = 0; j < permgrp_degree(*G); j++ ) orb_decomp[i][j] = 1;
+  }
+
+  size_t skipto = set_size;
+  uint32_t Kbase[set_size];
+
+  _setstab_in(0, set_size, &skipto, *G, &K, u, u_inv, fund_orbs, orb_decomp,
+              s, m, Kbase);
+
+  permgrp_new_base(G, old_base, permgrp_degree(*G));
+
+  for ( i = 0; i < set_size; i++ ) {
+    free(orb_decomp[i]);
+    free(fund_orbs[i]);
+    free(u[i]);
+    free(u_inv[i]);
+  }
+  free(orb_decomp);
+  free(fund_orbs);
+  free(u);
+  free(u_inv);
+  free(base);
+  free(old_base);
+
+  return K;
+}

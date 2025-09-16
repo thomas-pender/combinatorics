@@ -8,11 +8,11 @@
  * @author Thomas Pender
  * @date 2025-07
  */
+# include <config.h>
+
 # include <permgrp.h>
 # include <permgrp_struct_p.h>
 # include <perm.h>
-
-# include <stdio.h>
 
 /* ---------------------------------------------------------------------------
  * fundamental orbit generation
@@ -150,10 +150,19 @@ int print_hash_apply(void **_x, void *_y)
   return 1;
 }
 
+# ifdef __DEBUG__
 void print_grp_info(permgrp_t G)
 {
   size_t i, j;
-  printf("grp order = %zu\n", permgrp_order(G));
+# ifdef HAVE_GMP_H
+  mpz_t n;
+  mpz_init(n);
+  permgrp_order(n, G);
+  gmp_printf("grp order = %Zd\n", n);
+  mpz_clear(n);
+# else
+  printf("grp order = %zu\n", permgrp_orderfast(G));
+# endif
   printf("degree = %zu\nbase length = %zu\n",
          permgrp_degree(G), permgrp_baselen(G));
   printf("base = ");
@@ -178,3 +187,4 @@ void print_grp_info(permgrp_t G)
       printf("\n");
     }
 }
+# endif

@@ -7,6 +7,8 @@
  * @author Thomas Pender
  * @date 2025-07
  */
+# include <config.h>
+
 # include <permgrp.h>
 # include <permgrp_struct_p.h>
 # include <perm.h>
@@ -15,7 +17,10 @@ extern void orbit(tree_t*, uint32_t, size_t);
 extern uint32_t *sift(permgrp_t, const uint32_t*restrict, size_t*);
 extern void hash_insert(hashtabs_t*, const uint32_t*, size_t);
 extern void swap(void*, void*, size_t);
+
+# ifdef __DEBUG__
 extern void print_grp_info(permgrp_t);
+# endif
 
 /* ---------------------------------------------------------------------------
  * auxiliary routines for initialization
